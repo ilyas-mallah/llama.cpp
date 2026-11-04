@@ -188,6 +188,38 @@ static void test_penalties(
     tester.check();
 }
 
+// the penalized tokens must be found wherever they sit in the candidates, and skipped when they are missing
+static void test_penalties_candidates(const std::vector<llama_token> & candidates) {
+    const std::vector<llama_token> last_tokens = {1, 1, 2};
+    const float repeat  = 2.0f;
+    const float freq    = 0.5f;
+    const float present = 1.0f;
+
+    std::vector<llama_token_data> cur;
+    for (const llama_token token : candidates) {
+        cur.emplace_back(llama_token_data{token, (token % 2 ? -1.0f : 1.0f) * (token + 1), 0.0f});
+    }
+    llama_token_data_array cur_p = { cur.data(), cur.size(), -1, false };
+
+    auto * sampler = llama_sampler_init_penalties(5, (int32_t) last_tokens.size(), repeat, freq, present);
+    for (const llama_token token : last_tokens) {
+        llama_sampler_accept(sampler, token);
+    }
+    llama_sampler_apply(sampler, &cur_p);
+    llama_sampler_free(sampler);
+
+    for (size_t i = 0; i < cur_p.size; i++) {
+        const llama_token token = candidates[i];
+        float expected = (token % 2 ? -1.0f : 1.0f) * (token + 1);
+        const int count = token == 1 ? 2 : token == 2 ? 1 : 0;
+        if (count > 0) {
+            expected = (expected <= 0 ? expected * repeat : expected / repeat) - (float(count) * freq + present);
+        }
+        GGML_ASSERT(cur_p.data[i].id == token);
+        GGML_ASSERT(fabs(cur_p.data[i].logit - expected) < 1e-6);
+    }
+}
+
 static void test_dry(
     const std::vector<float> & probs, const std::vector<llama_token> & last_tokens,
     const std::vector<float> & expected_probs, float dry_multiplier, float dry_base,
@@ -385,6 +417,13 @@ int main(void) {
     test_penalties({0.2f, 0.2f, 0.2f, 0.2f, 0.2f}, {0, 1, 2},       {0.000023f, 0.000023f, 0.000023f, 0.499966f, 0.499966f}, 1.0f, 5.0f, 5.0f);
     test_penalties({0.2f, 0.2f, 0.2f, 0.2f, 0.2f}, {0, 1, 2, 0, 0}, {0.000000f, 0.000023f, 0.000023f, 0.499977f, 0.499977f}, 1.0f, 5.0f, 5.0f);
 
+    test_penalties_candidates({0, 1, 2, 3, 4});
+    test_penalties_candidates({0, 1, 2, 4, 3});
+    test_penalties_candidates({0, 1, 2});
+    test_penalties_candidates({0, 1});
+    test_penalties_candidates({2, 1});
+    test_penalties_candidates({4, 3, 2, 1, 0});
+    test_penalties_candidates({0, 2, 4});
 
     test_dry({0.25f, 0.25f, 0.25f, 0.25f}, {0, 1}, {0.25f, 0.25f, 0.25f, 0.25f}, 1.0f, 1.1f, 2, 4, {});
     test_dry({0.25f, 0.25f, 0.25f, 0.25f}, {0, 1, 2, 0, 1}, {0.296923f, 0.296923f, 0.109232f, 0.296923f}, 1.0f, 1.1f, 2, 5, {});
